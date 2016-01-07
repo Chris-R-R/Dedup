@@ -22,15 +22,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-/*
-To build (with the compiler provided with Microsoft Windows SDK):
-cd "C:\Program Files (x86)\Microsoft Visual Studio 14.0\VC\bin\x86_amd64"
-vcvarsx86_amd64.bat
-cd <code path>
-cl <code path>\duplicates.cpp <code path>\PMurHash.c /O2 /EHsc /GA /MT /Fe<code path>\Dedup.exe
-*/
-
-
 #include <stdio.h>
 #include <windows.h>
 #include <vector>
