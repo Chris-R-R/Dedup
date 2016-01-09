@@ -31,6 +31,7 @@ SOFTWARE.
 #include "PMurHash.h"
 
 #define BUFFERSIZE (64*1024*1024)
+#define VERSION "0.2"
 
 using namespace std;
 
@@ -42,9 +43,9 @@ class oneFile
 	uint64_t timeStamp;
 };
 
-map<uint64_t,map<uint32_t,list<oneFile>>> g_files;	//Map of sizes,map of hashes, list of objects
+map<uint64_t,list<oneFile>> g_files;	//Map of sizes,map of hashes, list of objects
 void RecurseFilePath(wstring path);
-uint32_t CalculateFileHash(const wstring& path, WIN32_FIND_DATAW& findData,uint64_t fileSize);
+uint32_t CalculateFileHash(const wstring& newPath, uint64_t fileSize);
 void checkDuplicates(bool deleteFiles,bool showDuplicates);
 bool AreDuplicates(const wstring& file1, const wstring& file2, uint64_t fileSize);
 vector<BYTE> g_buffer;
@@ -54,9 +55,10 @@ uint64_t g_filesProcessed=0;
 
 int wmain(int argc, wchar_t* argv[])
 {
+	DWORD timeTaken=GetTickCount();
 	bool deleteFiles=false;
 	bool showDuplicates=false;
-	printf("Dedup (c) 2015 Logicore Software\n");
+	printf("Dedup v%s (c) 2015 Logicore Software\n",VERSION);
 	printf("www.logicore.se\n");
 	printf("The software is provided as is. Use at your own risk.\n");
 	if(argc<2)
@@ -82,10 +84,13 @@ int wmain(int argc, wchar_t* argv[])
 	g_buffer2.resize(BUFFERSIZE);
 
 	wstring path=argv[1];
-	printf("Hashing files...\n");
+	printf("Scanning files...\n");
 	RecurseFilePath(path);
-	printf("%I64d Files hashed. Performing comparisons\n",g_filesProcessed);
+	printf("%I64d Files found. Performing comparisons\n",g_filesProcessed);
 	checkDuplicates(deleteFiles,showDuplicates);
+	
+	timeTaken=GetTickCount()-timeTaken;
+	printf("Time taken: %d seconds\n",timeTaken/1000);
 	return 0;
 }
 
@@ -96,45 +101,59 @@ void checkDuplicates(bool deleteFiles,bool showDuplicates)
 	
 	for(auto& o : g_files)	//Loop over file sizes
 	{
-		for(auto& o2 : o.second)		//loop over hash values
+		if(o.second.size()>1)	//Size collision, need to hash & compare
 		{
-			bool stillOK=true;
-			if(o2.second.size()>1 && stillOK)
+			map<uint32_t,list<oneFile>> hashes;
+			for(auto& o2 : o.second)		//loop over hash values
 			{
-				stillOK=false;
-				oneFile of=o2.second.front();
-				// Figure out which file is oldest.
-				for each(auto& o3 in o2.second)
+				wstring fileName=o2.path+L"\\"+o2.name;
+				uint32_t hash=CalculateFileHash(fileName,o.first);
+				hashes[hash].push_back(o2);
+			}
+			
+			for(auto& o2 : hashes)		//loop over hash values
+			{
+				bool stillOK=true;
+				if(o2.second.size()>1 && stillOK)
 				{
-					if(o3.timeStamp<of.timeStamp)
-						of=o3;
-				}
-				wstring fileName1=of.path+L"\\"+of.name;
-				for(list<oneFile>::iterator o3=o2.second.begin();o3!=o2.second.end();)
-				{
-					if(!( (o3->path== of.path) && (o3->name== of.name) ))
+					stillOK=false;
+					oneFile of=o2.second.front();
+					// Figure out which file is oldest.
+					for each(auto& o3 in o2.second)
 					{
-						wstring fileName2=o3->path+L"\\"+o3->name;
-						if(AreDuplicates(fileName1, fileName2,o.first))
+						if(o3.timeStamp<of.timeStamp)
+							of=o3;
+					}
+					wstring fileName1=of.path+L"\\"+of.name;
+					for(list<oneFile>::iterator o3=o2.second.begin();o3!=o2.second.end();)
+					{
+						if(!( (o3->path== of.path) && (o3->name== of.name) ))
 						{
-							if(showDuplicates)
-								wprintf(L"%s is a duplicate of %s\n",fileName2.c_str(),fileName1.c_str());
-							if(deleteFiles)
-								DeleteFileW(fileName2.c_str());
+							wstring fileName2=o3->path+L"\\"+o3->name;
+							if(AreDuplicates(fileName1, fileName2,o.first))
+							{
+								if(showDuplicates)
+									wprintf(L"%s is a duplicate of %s\n",fileName2.c_str(),fileName1.c_str());
+								if(deleteFiles)
+								{
+									if(!DeleteFileW(fileName2.c_str()));
+										wprintf(L"Could not delete %s\n",fileName2.c_str());
+								}
+								stillOK=true;
+								o3=o2.second.erase(o3);
+								duplicates++;
+								bytesSaved+=o.first;
+								continue;	//to the loop
+							}
+						}
+						else
+						{
 							stillOK=true;
 							o3=o2.second.erase(o3);
-							duplicates++;
-							bytesSaved+=o.first;
-							continue;	//to the loop
+							continue;
 						}
+						o3++;
 					}
-					else
-					{
-						stillOK=true;
-						o3=o2.second.erase(o3);
-						continue;
-					}
-					o3++;
 				}
 			}
 		}
@@ -187,8 +206,6 @@ void RecurseFilePath(wstring path)
 			uint64_t fileSize=findData.nFileSizeHigh;
 			fileSize=fileSize<<32;
 			fileSize+=findData.nFileSizeLow;
-			uint32_t hash=CalculateFileHash(path,findData,fileSize);
-			
 
 			o.timeStamp=findData.ftCreationTime.dwHighDateTime;
 			o.timeStamp=o.timeStamp<<32;
@@ -196,7 +213,7 @@ void RecurseFilePath(wstring path)
 
 			o.name=findData.cFileName;
 			o.path=path;
-			g_files[fileSize][hash].push_back(o);
+			g_files[fileSize].push_back(o);
 			g_filesProcessed++;
 		}
 	}while(true);	
@@ -240,14 +257,12 @@ bool AreDuplicates(const wstring& file1, const wstring& file2, uint64_t fileSize
 	return true;
 }
 
-uint32_t CalculateFileHash(const wstring& path, WIN32_FIND_DATAW& findData,uint64_t fileSize)
+uint32_t CalculateFileHash(const wstring& newPath, uint64_t fileSize)
 {
 	MH_UINT32 hash=0;
 	MH_UINT32 carry=0;
 	uint64_t totalSize=fileSize;
 	
-	wstring newPath=path+L"\\";
-	newPath+=findData.cFileName;
 	FILE* fp=_wfopen(newPath.c_str(),L"rb");
 	if(fp)
 	{
