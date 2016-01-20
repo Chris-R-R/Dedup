@@ -31,7 +31,7 @@ SOFTWARE.
 #include "PMurHash.h"
 
 #define BUFFERSIZE (64*1024*1024)
-#define VERSION "0.2"
+#define VERSION "0.3"
 
 using namespace std;
 
@@ -46,7 +46,7 @@ class oneFile
 map<uint64_t,list<oneFile>> g_files;	//Map of sizes,map of hashes, list of objects
 void RecurseFilePath(wstring path);
 uint32_t CalculateFileHash(const wstring& newPath, uint64_t fileSize);
-void checkDuplicates(bool deleteFiles,bool showDuplicates);
+void checkDuplicates(bool deleteFiles,bool showDuplicates,bool linkFiles);
 bool AreDuplicates(const wstring& file1, const wstring& file2, uint64_t fileSize);
 vector<BYTE> g_buffer;
 vector<BYTE> g_buffer2;
@@ -58,6 +58,7 @@ int wmain(int argc, wchar_t* argv[])
 	DWORD timeTaken=GetTickCount();
 	bool deleteFiles=false;
 	bool showDuplicates=false;
+	bool linkFiles=false;
 	printf("Dedup v%s (c) 2015 Logicore Software\n",VERSION);
 	printf("www.logicore.se\n");
 	printf("The software is provided as is. Use at your own risk.\n");
@@ -67,6 +68,7 @@ int wmain(int argc, wchar_t* argv[])
 		printf("This program will find duplicate files within a folder\n");
 		printf("Options:\n");
 		printf("-D - delete duplicates, keeping the file with the oldest creation date\n");
+		printf("-L - create links for duplicates, keeping the file with the oldest creation date\n");
 		printf("-S - show each duplicate\n");
 		return 0;
 	}
@@ -78,8 +80,17 @@ int wmain(int argc, wchar_t* argv[])
 				deleteFiles=true;
 			if(!wcscmp(argv[i],L"-S"))
 				showDuplicates=true;
+			if(!wcscmp(argv[i],L"-L"))
+				linkFiles=true;
+
 		}	
 	}		
+	
+	if(linkFiles && deleteFiles)
+	{
+		printf("You cannot both link and delete files!\n");
+		return 0;
+	}
 	g_buffer.resize(BUFFERSIZE);
 	g_buffer2.resize(BUFFERSIZE);
 
@@ -87,14 +98,14 @@ int wmain(int argc, wchar_t* argv[])
 	printf("Scanning files...\n");
 	RecurseFilePath(path);
 	printf("%I64d Files found. Performing comparisons\n",g_filesProcessed);
-	checkDuplicates(deleteFiles,showDuplicates);
+	checkDuplicates(deleteFiles,showDuplicates,linkFiles);
 	
 	timeTaken=GetTickCount()-timeTaken;
 	printf("Time taken: %d seconds\n",timeTaken/1000);
 	return 0;
 }
 
-void checkDuplicates(bool deleteFiles,bool showDuplicates)
+void checkDuplicates(bool deleteFiles,bool showDuplicates,bool linkFiles)
 {
 	uint64_t duplicates=0;
 	uint64_t bytesSaved=0;
@@ -138,6 +149,25 @@ void checkDuplicates(bool deleteFiles,bool showDuplicates)
 								{
 									if(!DeleteFileW(fileName2.c_str()));
 										wprintf(L"Could not delete %s\n",fileName2.c_str());
+								}
+								else if(linkFiles)
+								{
+									wchar_t fname[MAX_PATH];
+									//Not really pleased with the MAX_PATH limitation here...
+									UINT res=GetTempFileNameW(o3->path.c_str(),L"DED",0,fname);	//We will use a temp file first in case CreateHardLink fails
+									if(res)
+									{
+										DeleteFileW(fname);		//Delete the new empty file, we just wanted a file name to use in CreateHardLink
+										if(CreateHardLinkW(fname,fileName1.c_str(),NULL))
+										{
+											DeleteFileW(fileName2.c_str());		//Delete the original duplicate
+											_wrename(fname,fileName2.c_str());	//rename temp file to original duplicate
+										}
+										else
+											wprintf(L"Could not link %s to %s\n",fileName2.c_str(),fileName1.c_str());
+									}
+									else
+										wprintf(L"Could not link %s to %s\n",fileName2.c_str(),fileName1.c_str());
 								}
 								stillOK=true;
 								o3=o2.second.erase(o3);
