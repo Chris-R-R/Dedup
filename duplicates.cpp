@@ -27,35 +27,21 @@ SOFTWARE.
 #include <vector>
 #include <map>
 #include <list>
+#include <string>
 #include <stdint.h>
 #include "PMurHash.h"
-
+#include "duplicates.h"
 #define BUFFERSIZE (64*1024*1024)
 #define VERSION "0.3"
 
-using namespace std;
-
-class oneFile
-{
-	public:
-	wstring path;
-	wstring name;
-	uint64_t timeStamp;
-};
-
-map<uint64_t,list<oneFile>> g_files;	//Map of sizes,map of hashes, list of objects
-void RecurseFilePath(wstring path);
-uint32_t CalculateFileHash(const wstring& newPath, uint64_t fileSize);
-void checkDuplicates(bool deleteFiles,bool showDuplicates,bool linkFiles);
-bool AreDuplicates(const wstring& file1, const wstring& file2, uint64_t fileSize);
-vector<BYTE> g_buffer;
-vector<BYTE> g_buffer2;
+std::vector<BYTE> g_buffer;
+std::vector<BYTE> g_buffer2;
 uint64_t g_filesProcessed=0;
 
 
 int wmain(int argc, wchar_t* argv[])
 {
-	DWORD timeTaken=GetTickCount();
+	DWORD startTime=GetTickCount();
 	bool deleteFiles=false;
 	bool showDuplicates=false;
 	bool linkFiles=false;
@@ -94,14 +80,21 @@ int wmain(int argc, wchar_t* argv[])
 	g_buffer.resize(BUFFERSIZE);
 	g_buffer2.resize(BUFFERSIZE);
 
-	wstring path=argv[1];
+	std::wstring path=argv[1];
 	printf("Scanning files...\n");
 	RecurseFilePath(path);
 	printf("%I64d Files found. Performing comparisons\n",g_filesProcessed);
 	checkDuplicates(deleteFiles,showDuplicates,linkFiles);
 	
-	timeTaken=GetTickCount()-timeTaken;
-	printf("Time taken: %d seconds\n",timeTaken/1000);
+	DWORD endTime=GetTickCount();
+	if(endTime>=startTime)
+		printf("Time taken: %d seconds\n",(endTime-startTime)/1000);
+	else	//The tick counter has wrapped around - unlikely as only happens every 49.7 days - handle as 64-bit.
+	{		//We could use GetTickCount64() but this requires Vista / Windows Server 2008.
+		uint64_t longtime=(0x100000000-startTime);
+		longtime+=endTime;
+		printf("Time taken: %I64d seconds\n",longtime/1000);
+	}
 	return 0;
 }
 
@@ -114,10 +107,10 @@ void checkDuplicates(bool deleteFiles,bool showDuplicates,bool linkFiles)
 	{
 		if(o.second.size()>1)	//Size collision, need to hash & compare
 		{
-			map<uint32_t,list<oneFile>> hashes;
+			std::map<uint32_t,std::list<oneFile>> hashes;
 			for(auto& o2 : o.second)		//loop over hash values
 			{
-				wstring fileName=o2.path+L"\\"+o2.name;
+				std::wstring fileName=o2.path+L"\\"+o2.name;
 				uint32_t hash=CalculateFileHash(fileName,o.first);
 				hashes[hash].push_back(o2);
 			}
@@ -129,20 +122,20 @@ void checkDuplicates(bool deleteFiles,bool showDuplicates,bool linkFiles)
 				{
 					stillOK=false;
 					oneFile of=o2.second.front();
-					// Figure out which file is oldest.
+					// Figure out which file is oldest. We want to keep the oldest one.
 					for each(auto& o3 in o2.second)
 					{
 						if(o3.timeStamp<of.timeStamp)
 							of=o3;
 					}
-					wstring fileName1=of.path+L"\\"+of.name;
-					for(list<oneFile>::iterator o3=o2.second.begin();o3!=o2.second.end();)
+					std::wstring fileName1=of.path+L"\\"+of.name;
+					for(std::list<oneFile>::iterator o3=o2.second.begin();o3!=o2.second.end();)
 					{
-						if(!( (o3->path== of.path) && (o3->name== of.name) ))
+						if(!( (o3->path == of.path) && (o3->name == of.name) ))
 						{
-							wstring fileName2=o3->path+L"\\"+o3->name;
-							if(AreDuplicates(fileName1, fileName2,o.first))
-							{
+							std::wstring fileName2=o3->path+L"\\"+o3->name;
+							if(AreDuplicates(fileName1, fileName2,o.first))		//This actually compares byte by byte - we do not rely on the 32 bit hash being unique. 
+							{													//This is probably the most time consuming, together with the hashing.
 								if(showDuplicates)
 									wprintf(L"%s is a duplicate of %s\n",fileName2.c_str(),fileName1.c_str());
 								if(deleteFiles)
@@ -150,14 +143,14 @@ void checkDuplicates(bool deleteFiles,bool showDuplicates,bool linkFiles)
 									if(!DeleteFileW(fileName2.c_str()));
 										wprintf(L"Could not delete %s\n",fileName2.c_str());
 								}
-								else if(linkFiles)
-								{
+								else if(linkFiles)	//This is a bit tricky, we use a temp file so we don't risk losing a file in case the linking goes wrong.
+								{					//CreateHardLink() requires the files to be on the same volume but this might not be the case if "junction points" are used. 
 									wchar_t fname[MAX_PATH];
 									//Not really pleased with the MAX_PATH limitation here...
 									UINT res=GetTempFileNameW(o3->path.c_str(),L"DED",0,fname);	//We will use a temp file first in case CreateHardLink fails
 									if(res)
 									{
-										DeleteFileW(fname);		//Delete the new empty file, we just wanted a file name to use in CreateHardLink
+										DeleteFileW(fname);		//Delete the new empty file, we just wanted a file name to use in CreateHardLink. Theoretical race condition here, another process could recreate the file.
 										if(CreateHardLinkW(fname,fileName1.c_str(),NULL))
 										{
 											DeleteFileW(fileName2.c_str());		//Delete the original duplicate
@@ -191,10 +184,10 @@ void checkDuplicates(bool deleteFiles,bool showDuplicates,bool linkFiles)
 	printf("%I64d duplicates found corresponding to %I64d kilobytes.\n",duplicates,bytesSaved/1024);
 }
 
-void RecurseFilePath(wstring path)
+void RecurseFilePath(std::wstring path)
 {
 	WIN32_FIND_DATAW findData;
-	wstring pathWithWildCard=path+L"\\*";
+	std::wstring pathWithWildCard=path+L"\\*";
 	bool first=true;
 	HANDLE h=0;
 	
@@ -225,7 +218,7 @@ void RecurseFilePath(wstring path)
 		{
 			if( wcscmp(findData.cFileName,L".") && wcscmp(findData.cFileName,L"..") )
 			{
-				wstring newPath=path+L"\\";
+				std::wstring newPath=path+L"\\";
 				newPath+=findData.cFileName;
 				RecurseFilePath(newPath);
 			}
@@ -248,8 +241,8 @@ void RecurseFilePath(wstring path)
 		}
 	}while(true);	
 }
-bool AreDuplicates(const wstring& file1, const wstring& file2, uint64_t fileSize)
-{
+bool AreDuplicates(const std::wstring& file1, const std::wstring& file2, uint64_t fileSize)	//TODO - g_buffer could potentially already contain the correct data from an earlier call.
+{																							//Maybe we can keep it and reuse, cutting down on disk I/O
 	FILE* fp1=_wfopen(file1.c_str(),L"rb");
 	if(fp1)
 	{
@@ -287,11 +280,13 @@ bool AreDuplicates(const wstring& file1, const wstring& file2, uint64_t fileSize
 	return true;
 }
 
-uint32_t CalculateFileHash(const wstring& newPath, uint64_t fileSize)
+uint32_t CalculateFileHash(const std::wstring& newPath, uint64_t fileSize)
 {
 	MH_UINT32 hash=0;
 	MH_UINT32 carry=0;
 	uint64_t totalSize=fileSize;
+	
+	//special case - all zero byte long files are duplicates. Worth optimizing?
 	
 	FILE* fp=_wfopen(newPath.c_str(),L"rb");
 	if(fp)
